@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Chat App</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        #login-container {
+            text-align: center;
+            margin-top: 100px;
+        }
+        #chat-container {
+            display: none;
+        }
+        #messages {
+            height: 400px;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-bottom: 10px;
+            overflow-y: auto;
+        }
+        #message-form {
+            display: flex;
+        }
+        #message-input {
+            flex: 1;
+            padding: 8px;
+            margin-right: 10px;
+        }
+        .message {
+            margin-bottom: 8px;
+            padding: 8px;
+            border-radius: 5px;
+        }
+        .own-message {
+            background-color: #e3f2fd;
+            text-align: right;
+        }
+        .other-message {
+            background-color: #f5f5f5;
+        }
+        .system-message {
+            color: #666;
+            font-style: italic;
+            text-align: center;
+        }
+        .timestamp {
+            font-size: 12px;
+            color: #666;
+        }
+        .username {
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="login-container">
+        <h2>Simple Chat App</h2>
+        <div>
+            <input type="text" id="username-input" placeholder="Enter your username" required>
+            <button id="login-button">Join Chat</button>
+        </div>
+        <p id="login-error" style="color: red;"></p>
+    </div>
+
+    <div id="chat-container">
+        <h2>Chat Room</h2>
+        <p>Logged in as: <span id="current-username"></span></p>
+        <div id="messages"></div>
+        <form id="message-form">
+            <input type="text" id="message-input" placeholder="Type your message..." required>
+            <button type="submit">Send</button>
+        </form>
+    </div>
+
+    <!-- Include Socket.IO client library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.1/socket.io.js"></script>
+    
+    <script>
+        // Connect to Socket.IO server
+        const socket = io();
+        let username = '';
+
+        // DOM elements
+        const loginContainer = document.getElementById('login-container');
+        const chatContainer = document.getElementById('chat-container');
+        const loginError = document.getElementById('login-error');
+        const usernameInput = document.getElementById('username-input');
+        const loginButton = document.getElementById('login-button');
+        const currentUsername = document.getElementById('current-username');
+        const messagesContainer = document.getElementById('messages');
+        const messageForm = document.getElementById('message-form');
+        const messageInput = document.getElementById('message-input');
+
+        // Event listeners
+        loginButton.addEventListener('click', handleLogin);
+        messageForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            sendMessage();
+        });
+
+        // Socket.IO event handlers
+        socket.on('connect', () => {
+            console.log('Connected to server');
+        });
+
+        socket.on('registration_status', (data) => {
+            if (data.success) {
+                username = usernameInput.value;
+                currentUsername.textContent = username;
+                loginContainer.style.display = 'none';
+                chatContainer.style.display = 'block';
+                loginError.textContent = '';
+                
+                // Focus on message input
+                messageInput.focus();
+            } else {
+                loginError.textContent = data.message;
+            }
+        });
+
+        socket.on('receive_message', (data) => {
+            displayMessage(data);
+        });
+
+        socket.on('user_joined', (data) => {
+            if (username) {  // Only show if already logged in
+                const message = {
+                    username: 'System',
+                    message: `${data.username} has joined the chat`,
+                    system: true
+                };
+                displayMessage(message);
+            }
+        });
+
+        socket.on('user_left', (data) => {
+            if (username) {  // Only show if already logged in
+                const message = {
+                    username: 'System',
+                    message: `${data.username} has left the chat`,
+                    system: true
+                };
+                displayMessage(message);
+            }
+        });
+
+        // Functions
+        function handleLogin() {
+            const usernameValue = usernameInput.value.trim();
+            if (usernameValue.length < 3) {
+                loginError.textContent = 'Username must be at least 3 characters long';
+                return;
+            }
+            
+            socket.emit('register_user', {
+                username: usernameValue
+            });
+        }
+
+        function sendMessage() {
+            const messageValue = messageInput.value.trim();
+            if (!messageValue) return;
+
+            const timestamp = new Date().toLocaleTimeString();
+            
+            socket.emit('send_message', {
+                username: username,
+                message: messageValue,
+                timestamp: timestamp
+            });
+
+            messageInput.value = '';
+            messageInput.focus();
+        }
+
+        function displayMessage(data) {
+            const messageDiv = document.createElement('div');
+            
+            if (data.system) {
+                messageDiv.className = 'message system-message';
+                messageDiv.textContent = data.message;
+            } else {
+                // Determine if this is the current user's message
+                const isOwnMessage = data.username === username;
+                messageDiv.className = `message ${isOwnMessage ? 'own-message' : 'other-message'}`;
+                
+                const usernameSpan = document.createElement('span');
+                usernameSpan.className = 'username';
+                usernameSpan.textContent = `${data.username}: `;
+                
+                const messageContent = document.createElement('span');
+                messageContent.textContent = data.message;
+                
+                const timestampSpan = document.createElement('div');
+                timestampSpan.className = 'timestamp';
+                timestampSpan.textContent = data.timestamp;
+                
+                if (isOwnMessage) {
+                    messageDiv.appendChild(messageContent);
+                    messageDiv.appendChild(document.createElement('br'));
+                    messageDiv.appendChild(timestampSpan);
+                } else {
+                    messageDiv.appendChild(usernameSpan);
+                    messageDiv.appendChild(messageContent);
+                    messageDiv.appendChild(document.createElement('br'));
+                    messageDiv.appendChild(timestampSpan);
+                }
+            }
+            
+            messagesContainer.appendChild(messageDiv);
+            
+            // Auto-scroll to the bottom
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+    </script>
+</body>
+</html>
