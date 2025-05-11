@@ -54,4 +54,4 @@ Socket.IO handles all the complex parts of real-time communication, including:
 You can customize the application by:
 - Changing the styles in the CSS section of index.html
 - Adding more features like private messaging, user avatars, or message timestamps
-- Implementing persistent storage for chat history
+- Implementing persistent storage for chat history (currently not persistent)
