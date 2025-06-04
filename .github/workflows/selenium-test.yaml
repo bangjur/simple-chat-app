@@ -29,7 +29,7 @@ jobs:
 
       - name: Start Flask app
         run: |
-          nohup python app.py &
+          nohup python app.py --no-debug --no-reload &
           sleep 10
 
       - name: Run Selenium test
