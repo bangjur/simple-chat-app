@@ -9,10 +9,11 @@ on:
 jobs:
   selenium-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # Prevent hanging builds
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -27,13 +28,72 @@ jobs:
       - name: Install Chrome
         uses: browser-actions/setup-chrome@v1
 
-      - name: Start Flask app
+      - name: Check if Flask app starts
         run: |
-          nohup python app.py --no-debug --no-reload &
-          sleep 10
+          echo "Testing Flask app startup..."
+          timeout 30s python -c "
+          import subprocess
+          import time
+          import requests
+          
+          # Start Flask app in background
+          proc = subprocess.Popen(['python', 'app.py'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+          
+          # Wait for app to start
+          for i in range(30):
+              try:
+                  response = requests.get('http://localhost:5000', timeout=2)
+                  if response.status_code == 200:
+                      print('✅ Flask app started successfully')
+                      break
+              except:
+                  pass
+              time.sleep(1)
+          else:
+              print('❌ Flask app failed to start')
+              raise Exception('Flask app not accessible')
+          
+          proc.terminate()
+          "
+
+      - name: Start Flask app for testing
+        run: |
+          echo "Starting Flask app in background..."
+          nohup python app.py > flask.log 2>&1 &
+          echo $! > flask.pid
+          
+          # Wait for app to be ready
+          echo "Waiting for Flask app to be ready..."
+          for i in {1..30}; do
+            if curl -f http://localhost:5000 >/dev/null 2>&1; then
+              echo "✅ Flask app is ready after ${i} seconds"
+              break
+            fi
+            echo "⏳ Waiting... (${i}/30)"
+            sleep 1
+          done
 
       - name: Run Selenium test
-        env:
-          DISPLAY: :99
         run: |
+          echo "Running Selenium tests..."
           python selenium-test.py
+        continue-on-error: false  # Set to true if you want CI to pass even with test failures
+
+      - name: Show Flask logs on failure
+        if: failure()
+        run: |
+          echo "=== FLASK LOGS ==="
+          cat flask.log || echo "No Flask logs found"
+          echo "=== CHROME LOGS ==="
+          ls -la /tmp/chrome* 2>/dev/null || echo "No Chrome logs found"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          # Kill Flask app
+          if [ -f flask.pid ]; then
+            kill $(cat flask.pid) 2>/dev/null || true
+            rm flask.pid
+          fi
+          # Kill any remaining Python processes
+          pkill -f "python app.py" || true
