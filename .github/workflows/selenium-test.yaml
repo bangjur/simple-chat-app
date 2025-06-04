@@ -76,7 +76,7 @@ jobs:
       - name: Run Selenium test
         run: |
           echo "Running Selenium tests..."
-          python selenium-test.py
+          python selenium-test-1.py
         continue-on-error: false  # Set to true if you want CI to pass even with test failures
 
       - name: Show Flask logs on failure
