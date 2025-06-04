@@ -1,0 +1,56 @@
+name: Selenium Chat App Test
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  selenium-test:
+    runs-on: ubuntu-latest
+
+    services:
+      chat-app:
+        image: python:3.9
+        ports:
+          - 5000:5000
+        options: >-
+          --health-cmd="curl --fail http://localhost:5000 || exit 1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+        env:
+          FLASK_APP: app.py
+        volumes:
+          - ./:/app
+        command: >
+          bash -c "
+            pip install -r /app/requirements.txt &&
+            cd /app &&
+            python app.py
+          "
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Run Selenium test
+        env:
+          DISPLAY: :99
+        run: |
+          export PATH=$PATH:/usr/bin/google-chrome
+          python selenium-test.py
