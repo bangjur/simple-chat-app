@@ -55,3 +55,28 @@ You can customize the application by:
 - Changing the styles in the CSS section of index.html
 - Adding more features like private messaging, user avatars, or message timestamps
 - Implementing persistent storage for chat history (currently not persistent)
+
+## Testing and CI/CD
+
+This project includes basic automated UI testing using **Selenium** to simulate real user interactions like logging in and sending messages.
+
+Tests cover:
+- App accessibility
+- Login flow
+- Chat interface load
+- Sending and verifying messages
+
+### CI/CD with GitHub Actions
+
+The test workflow is fully automated using GitHub Actions.  
+Each push runs the following steps:
+
+1. Set up Python and Chrome
+2. Install dependencies
+3. Launch the Flask server
+4. Run Selenium tests
+5. Output results and handle cleanup
+
+You can find the GitHub Actions workflow under `.github/workflows/selenium-test.yml`
+
+✅ [View it on GitHub](https://github.com/bangjur/simple-chat-app)
