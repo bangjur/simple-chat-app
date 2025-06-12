@@ -284,3 +284,39 @@ postconf smtp_tls_security_level
 # Show default value
 postconf -d smtp_tls_security_level
 ```
+
+---
+
+## 🚀 Optimasi Kecepatan Pengiriman Email (qmgr & pickup)
+
+Untuk mempercepat proses pengiriman email, kamu bisa mengatur interval wakeup pada service `pickup` dan `qmgr` di `/etc/postfix/master.cf`.
+
+### Langkah Optimasi:
+1. Edit file `/etc/postfix/master.cf`:
+   ```bash
+   sudo nano /etc/postfix/master.cf
+   ```
+2. Cari baris yang mengandung `pickup` dan `qmgr`, misal:
+   ```
+   pickup   unix  n       -       n       60      1       pickup
+   qmgr     unix  n       -       n       300     1       qmgr
+   ```
+3. Ubah kolom kelima (wakeup time) menjadi:
+   - `pickup` → 5
+   - `qmgr`   → 30
+   Sehingga menjadi:
+   ```
+   pickup   unix  n       -       n       5       1       pickup
+   qmgr     unix  n       -       n       30      1       qmgr
+   ```
+4. Simpan file dan keluar dari editor.
+5. Restart Postfix:
+   ```bash
+   sudo systemctl restart postfix
+   ```
+
+### Penjelasan:
+- **pickup**: Mengatur seberapa sering Postfix mengambil email baru dari maildrop (default 60 detik, disarankan 5 detik).
+- **qmgr**: Mengatur seberapa sering queue manager memproses antrian email (default 300 detik, disarankan 30 detik).
+
+Dengan pengaturan ini, email akan diproses dan dikirim lebih cepat dari servermu.
