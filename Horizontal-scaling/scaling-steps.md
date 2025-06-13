@@ -1,8 +1,8 @@
 # Horizontal Scaling Demo Steps
 
-> **Prerequisite:** Pastikan sudah ada Nginx yang berjalan di server (bukan container). Script dan stack ini TIDAK membuat container Nginx, melainkan menggunakan Nginx host sebagai load balancer. Config akan diupdate otomatis oleh Consul Template.
+> **Update:** Mulai sekarang, Nginx dijalankan sebagai container (`nginx-lb`). Script setup akan otomatis menonaktifkan Nginx host jika aktif, dan semua traffic masuk lewat container Nginx. Consul-template akan mengupdate config dan reload Nginx container secara otomatis.
 
-Dokumen ini menjelaskan langkah-langkah lengkap untuk mendemokan horizontal scaling pada aplikasi berbasis Docker, Nginx, dan Consul. Ikuti urutan berikut untuk setup, menjalankan, dan melakukan stress test pada sistem.
+Dokumen ini menjelaskan langkah-langkah lengkap untuk mendemokan horizontal scaling pada aplikasi berbasis Docker, Nginx (container), dan Consul. Ikuti urutan berikut untuk setup, menjalankan, dan melakukan stress test pada sistem.
 
 ---
 
@@ -30,7 +30,7 @@ sudo docker-compose up -d
 Container yang akan berjalan:
 - Consul (service discovery, port 8500)
 - Consul Template (sinkronisasi config Nginx)
-- Nginx (load balancer, port 80)
+- Nginx (load balancer, port 80, **container nginx-lb**)
 - Fallback app (backup server, port 8081)
 - Web app (web-app-1, port 5000)
 
@@ -56,7 +56,7 @@ Service ini akan:
 
 ### Akses Aplikasi
 - Akses aplikasi melalui Nginx load balancer:
-  - http://localhost:5000
+  - http://localhost/
 - Akses fallback app (jika semua web-app down):
   - http://localhost:8081/
 

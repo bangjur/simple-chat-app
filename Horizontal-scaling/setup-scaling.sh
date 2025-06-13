@@ -161,14 +161,27 @@ services:
     container_name: consul-template
     volumes:
       - /etc/nginx/consul-templates:/templates
-      - /opt/scaling/nginx-config:/etc/nginx/conf.d
+      - /opt/scaling/nginx-config:/nginx-config
     command: >
-      consul-template
-      -template="/templates/load-balancer.conf.tpl:/etc/nginx/conf.d/load-balancer.conf:nginx -s reload"
-      -consul-addr=consul:8500
-      -log-level=INFO
+      sh -c 'consul-template \
+        -template="/templates/load-balancer.conf.tpl:/nginx-config/load-balancer.conf:docker exec nginx-lb nginx -s reload" \
+        -consul-addr=consul:8500 \
+        -log-level=INFO'
     depends_on:
       - consul
+      - nginx-lb
+    networks:
+      - scaling_network
+    restart: unless-stopped
+
+  # Nginx Load Balancer (container)
+  nginx-lb:
+    image: nginx:1.25
+    container_name: nginx-lb
+    ports:
+      - "80:80"
+    volumes:
+      - /opt/scaling/nginx-config:/etc/nginx/conf.d
     networks:
       - scaling_network
     restart: unless-stopped
@@ -215,6 +228,13 @@ networks:
   scaling_network:
     driver: bridge
 EOF
+
+# 6a. Disable nginx host jika ada
+if systemctl is-active --quiet nginx; then
+  echo "[INFO] Menonaktifkan nginx host..."
+  sudo systemctl stop nginx
+  sudo systemctl disable nginx
+fi
 
 # 7. Create monitoring and scaling script
 cat > /opt/scaling/scripts/monitor-and-scale.sh << 'EOF'
