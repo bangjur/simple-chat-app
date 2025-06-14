@@ -80,7 +80,7 @@ echo ""
 echo "🚀 Ready to run setup-scaling.sh again!"
 
 # Optional: Check if host nginx needs to be re-enabled
-if ! systemctl is-active --quiet nginx && [ -f "/etc/nginx/nginx.conf.backup."* ]; then
+if ! systemctl is-active --quiet nginx && ls /etc/nginx/nginx.conf.backup.* 1> /dev/null 2>&1; then
     echo ""
     echo "💡 OPTIONAL: Re-enable host nginx if needed:"
     echo "   sudo systemctl enable nginx"

@@ -317,6 +317,7 @@ volumes:
 networks:
   scaling_network:
     driver: bridge
+    name: scaling_network
 EOF
 
 # 8. Backup existing nginx configuration
