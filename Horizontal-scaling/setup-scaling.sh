@@ -14,25 +14,30 @@ mkdir -p /var/lib/consul
 sudo mkdir -p /opt/scaling/nginx-config
 sudo chmod 777 /opt/scaling/nginx-config
 
-# 2. Install Docker Compose if not exists
+# 2. Copy SSL certificates to scaling directory
+echo "[INFO] Copying SSL certificates..."
+if [ -d "/etc/letsencrypt/live" ]; then
+    sudo cp -r /etc/letsencrypt/live /opt/scaling/ssl/
+    sudo cp -r /etc/letsencrypt/archive /opt/scaling/ssl/
+    sudo chmod -R 644 /opt/scaling/ssl/
+    sudo find /opt/scaling/ssl/ -name "privkey*.pem" -exec chmod 600 {} \;
+    echo "[INFO] SSL certificates copied successfully"
+else
+    echo "[WARNING] No SSL certificates found in /etc/letsencrypt/live"
+    echo "[INFO] Creating self-signed certificate for testing..."
+    mkdir -p /opt/scaling/ssl/live/juriengine.user.cloudjkt02.com
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout /opt/scaling/ssl/live/juriengine.user.cloudjkt02.com/privkey.pem \
+        -out /opt/scaling/ssl/live/juriengine.user.cloudjkt02.com/fullchain.pem \
+        -subj "/C=ID/ST=Jakarta/L=Jakarta/O=JuriEngine/CN=juriengine.user.cloudjkt02.com"
+    chmod 600 /opt/scaling/ssl/live/juriengine.user.cloudjkt02.com/privkey.pem
+    chmod 644 /opt/scaling/ssl/live/juriengine.user.cloudjkt02.com/fullchain.pem
+fi
+
+# 3. Install Docker Compose if not exists
 if ! command -v docker-compose &> /dev/null; then
     curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
     chmod +x /usr/local/bin/docker-compose
-fi
-
-# 3. Copy SSL certificates from existing nginx setup
-echo "[INFO] Copying SSL certificates..."
-if [ -d "/etc/letsencrypt/live/juriengine.user.cloudjkt02.com" ]; then
-    cp -r /etc/letsencrypt/live/juriengine.user.cloudjkt02.com /opt/scaling/ssl/
-    # Also copy renewal config and archive for future renewals
-    mkdir -p /opt/scaling/ssl/renewal
-    if [ -f "/etc/letsencrypt/renewal/juriengine.user.cloudjkt02.com.conf" ]; then
-        cp /etc/letsencrypt/renewal/juriengine.user.cloudjkt02.com.conf /opt/scaling/ssl/renewal/
-    fi
-    echo "[INFO] SSL certificates copied successfully"
-else
-    echo "[WARNING] SSL certificates not found at /etc/letsencrypt/live/juriengine.user.cloudjkt02.com"
-    echo "[INFO] You may need to setup SSL certificates manually"
 fi
 
 # 4. Create Consul Template for Nginx Load Balancer with SSL
@@ -45,10 +50,9 @@ upstream backend {
     server fallback-app:8081 backup;
 }
 
-# HTTP server - redirect to HTTPS
+# HTTP Server - Redirect to HTTPS
 server {
     listen 80;
-    listen [::]:80;
     server_name _;
     
     # Health check endpoint (allow HTTP for monitoring)
@@ -58,32 +62,37 @@ server {
         add_header Content-Type text/plain;
     }
     
-    # Redirect all other traffic to HTTPS
+    # Redirect all other HTTP traffic to HTTPS
     location / {
         return 301 https://$host$request_uri;
     }
 }
 
-# HTTPS server
+# HTTPS Server
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
     server_name _;
     
-    # SSL Configuration
-    ssl_certificate /etc/nginx/ssl/juriengine.user.cloudjkt02.com/fullchain.pem;
-    ssl_certificate_key /etc/nginx/ssl/juriengine.user.cloudjkt02.com/privkey.pem;
+    # Enable HTTP/2
+    http2 on;
     
-    ssl_session_cache shared:SSL:1m;
+    # SSL Configuration
+    ssl_certificate /etc/nginx/ssl/live/juriengine.user.cloudjkt02.com/fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/live/juriengine.user.cloudjkt02.com/privkey.pem;
+    
+    # SSL Session Settings
+    ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 10m;
-    ssl_ciphers PROFILE=SYSTEM;
-    ssl_prefer_server_ciphers on;
+    
+    # SSL Protocols and Ciphers
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
     
     # Security headers
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header X-Frame-Options DENY always;
     add_header X-Content-Type-Options nosniff always;
-    add_header X-XSS-Protection "1; mode=block" always;
     
     # Health check endpoint
     location /nginx-health {
@@ -99,7 +108,6 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-Port $server_port;
         
         # Health check untuk backend
@@ -112,7 +120,6 @@ server {
         proxy_buffering on;
         proxy_buffer_size 4k;
         proxy_buffers 8 4k;
-        proxy_busy_buffers_size 8k;
     }
 }
 EOF
@@ -126,16 +133,16 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
+    scheme = request.headers.get('X-Forwarded-Proto', 'http')
+    host = request.headers.get('Host', 'localhost')
+    
     return f"""
-    <h1>Scaling Infrastructure - Maintenance Mode</h1>
+    <h1>Scaling Infrastructure</h1>
     <p>No backend servers available. Please wait for scaling...</p>
     <p>Server ID: fallback</p>
-    <p>Protocol: {request.headers.get('X-Forwarded-Proto', 'http')}</p>
-    <p>Host: {request.headers.get('Host', 'unknown')}</p>
-    <style>
-        body {{ font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }}
-        h1 {{ color: #ff6b35; }}
-    </style>
+    <p>Protocol: {scheme}</p>
+    <p>Host: {host}</p>
+    <p>Headers: X-Forwarded-Proto = {request.headers.get('X-Forwarded-Proto', 'None')}</p>
     """
 
 @app.route('/health')
@@ -146,7 +153,7 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8081)
 EOF
 
-# 6. Create stress test application with HTTPS awareness
+# 6. Create stress test application
 cat > /opt/scaling/scripts/stress-app.py << 'EOF'
 from flask import Flask, request
 import time
@@ -160,25 +167,20 @@ app = Flask(__name__)
 def home():
     cpu_percent = psutil.cpu_percent(interval=1)
     memory = psutil.virtual_memory()
-    protocol = request.headers.get('X-Forwarded-Proto', 'http')
+    scheme = request.headers.get('X-Forwarded-Proto', 'http')
+    host = request.headers.get('Host', 'localhost')
     
     return f'''
     <h1>Web Application - Container {os.getenv("CONTAINER_ID", "unknown")}</h1>
-    <p><strong>Protocol:</strong> {protocol.upper()}</p>
-    <p><strong>Host:</strong> {request.headers.get('Host', 'unknown')}</p>
-    <p><strong>CPU Usage:</strong> {cpu_percent}%</p>
-    <p><strong>Memory Usage:</strong> {memory.percent}%</p>
-    <p><strong>Available Memory:</strong> {memory.available / 1024 / 1024:.2f} MB</p>
-    <p><strong>Container IP:</strong> {request.headers.get('X-Real-IP', 'unknown')}</p>
+    <p>Protocol: {scheme}</p>
+    <p>Host: {host}</p>
+    <p>CPU Usage: {cpu_percent}%</p>
+    <p>Memory Usage: {memory.percent}%</p>
+    <p>Available Memory: {memory.available / 1024 / 1024:.2f} MB</p>
+    <p><a href="/stress">Click here to stress test</a></p>
+    <p><a href="/health">Health Check</a></p>
     <hr>
-    <a href="/stress" style="background: #ff6b35; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
-        🔥 Start Stress Test
-    </a>
-    <style>
-        body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
-        h1 {{ color: #333; border-bottom: 2px solid #ff6b35; }}
-        p {{ margin: 10px 0; }}
-    </style>
+    <small>Headers: X-Forwarded-Proto = {request.headers.get('X-Forwarded-Proto', 'None')}</small>
     '''
 
 @app.route('/stress')
@@ -195,22 +197,17 @@ def stress():
         data = []
         end_time = time.time() + 120  # 120 seconds
         while time.time() < end_time:
-            data.append('x' * 1024 * 1024)  # 1MB each
+            data.append('xyz' * 1024 * 1024)  # 1MB each
             time.sleep(0.01)
 
     # Run stress tests in background
-    threading.Thread(target=cpu_stress, daemon=True).start()
-    threading.Thread(target=memory_stress, daemon=True).start()
+    threading.Thread(target=cpu_stress).start()
+    threading.Thread(target=memory_stress).start()
     
     return '''
-    <h1>🔥 Stress Test Started!</h1>
-    <p>CPU and Memory stress test is now running for 2 minutes.</p>
-    <p>Check the monitoring logs to see auto-scaling in action!</p>
-    <a href="/">← Back to Status</a>
-    <style>
-        body { font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }
-        h1 { color: #ff6b35; }
-    </style>
+    <h2>Stress test started!</h2>
+    <p>Check CPU and memory usage for 2 minutes.</p>
+    <p><a href="/">Back to home</a></p>
     '''
 
 @app.route('/health')
@@ -240,11 +237,6 @@ services:
     networks:
       - scaling_network
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "consul", "members"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
 
   # Consul Template untuk auto-update nginx config
   consul-template:
@@ -257,13 +249,10 @@ services:
       sh -c 'consul-template \
         -template="/templates/load-balancer.conf.tpl:/nginx-config/load-balancer.conf:docker exec nginx-lb nginx -s reload" \
         -consul-addr=consul:8500 \
-        -log-level=INFO \
-        -wait="2s:10s"'
+        -log-level=INFO'
     depends_on:
-      consul:
-        condition: service_healthy
-      nginx-lb:
-        condition: service_started
+      - consul
+      - nginx-lb
     networks:
       - scaling_network
     restart: unless-stopped
@@ -295,7 +284,6 @@ services:
         FROM python:3.9-slim
         RUN pip install flask
         COPY fallback-app.py /app.py
-        EXPOSE 8081
         CMD ["python", "/app.py"]
     container_name: fallback-app
     ports:
@@ -303,11 +291,6 @@ services:
     networks:
       - scaling_network
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
   # Initial web application
   web-app-1:
@@ -317,7 +300,6 @@ services:
         FROM python:3.9-slim
         RUN pip install flask psutil
         COPY stress-app.py /app.py
-        EXPOSE 5000
         CMD ["python", "/app.py"]
     image: scaling_web-app:latest
     container_name: web-app-1
@@ -328,54 +310,44 @@ services:
     networks:
       - scaling_network
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
 volumes:
   consul_data:
 
 networks:
-  default:
-    name: scaling_network
+  scaling_network:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
 EOF
 
-# 8. Disable nginx host dan backup config
-if systemctl is-active --quiet nginx; then
-  echo "[INFO] Backing up and disabling host nginx..."
-  # Backup current config
-  cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.backup.$(date +%Y%m%d_%H%M%S)
-  sudo systemctl stop nginx
-  sudo systemctl disable nginx
-  echo "[INFO] Host nginx disabled. Backup created."
+# 8. Backup existing nginx configuration
+if [ -f "/etc/nginx/nginx.conf" ]; then
+    echo "[INFO] Backing up existing nginx configuration..."
+    cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.backup.$(date +%Y%m%d_%H%M%S)
 fi
 
-# 9. Create monitoring and scaling script dengan SSL awareness
+# 9. Stop and disable host nginx
+if systemctl is-active --quiet nginx; then
+    echo "[INFO] Stopping and disabling host nginx..."
+    sudo systemctl stop nginx
+    sudo systemctl disable nginx
+    echo "[INFO] Host nginx stopped and disabled"
+fi
+
+# 10. Create monitoring and scaling script
 cat > /opt/scaling/scripts/monitor-and-scale.sh << 'EOF'
 #!/bin/bash
 
 # Configuration
 CONSUL_URL="http://localhost:8500"
-CPU_THRESHOLD=75
-MEMORY_THRESHOLD=75
-CHECK_INTERVAL=15
+CPU_THRESHOLD=85
+MEMORY_THRESHOLD=85
+CHECK_INTERVAL=10
 SCALE_COOLDOWN=60
 LOGFILE="/opt/scaling/logs/scaling.log"
-MAX_CONTAINERS=5
-MIN_CONTAINERS=1
 
 # Global variables
 LAST_SCALE_TIME=0
 CONTAINER_COUNT=1
-
-# Create log directory
-mkdir -p "$(dirname "$LOGFILE")"
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOGFILE"
@@ -389,141 +361,96 @@ get_container_stats() {
 register_service() {
     local container_name=$1
     local port=$2
-    local container_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_name" 2>/dev/null)
+    local container_ip=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_name" 2>/dev/null)
     
     if [ -z "$container_ip" ]; then
-        log "ERROR: Could not get IP for $container_name"
+        log "Failed to get IP for $container_name"
         return 1
     fi
     
-    local registration_data=$(cat <<JSON
-{
-    "ID": "$container_name",
-    "Name": "web-app",
-    "Address": "$container_ip",
-    "Port": $port,
-    "Check": {
-        "HTTP": "http://$container_ip:$port/health",
-        "Interval": "15s",
-        "Timeout": "5s",
-        "DeregisterCriticalServiceAfter": "60s"
-    }
-}
-JSON
-)
-    
     curl -s -X PUT "$CONSUL_URL/v1/agent/service/register" \
-        -H "Content-Type: application/json" \
-        -d "$registration_data" && log "✓ Registered $container_name ($container_ip:$port) to Consul"
+        -d "{
+            \"ID\": \"$container_name\",
+            \"Name\": \"web-app\",
+            \"Address\": \"$container_ip\",
+            \"Port\": $port,
+            \"Check\": {
+                \"HTTP\": \"http://$container_ip:$port/health\",
+                \"Interval\": \"10s\",
+                \"Timeout\": \"3s\"
+            }
+        }" && log "Registered $container_name to Consul ($container_ip:$port)"
 }
 
 deregister_service() {
     local container_name=$1
     curl -s -X PUT "$CONSUL_URL/v1/agent/service/deregister/$container_name" \
-        && log "✗ Deregistered $container_name from Consul"
-}
-
-wait_for_container_ready() {
-    local container_name=$1
-    local max_attempts=30
-    local attempt=0
-    
-    log "Waiting for $container_name to be ready..."
-    while [ $attempt -lt $max_attempts ]; do
-        if docker exec "$container_name" curl -s http://localhost:5000/health >/dev/null 2>&1; then
-            log "✓ $container_name is ready"
-            return 0
-        fi
-        attempt=$((attempt + 1))
-        sleep 2
-    done
-    
-    log "✗ $container_name failed to become ready after $max_attempts attempts"
-    return 1
+        && log "Deregistered $container_name from Consul"
 }
 
 scale_up() {
-    if [ $CONTAINER_COUNT -ge $MAX_CONTAINERS ]; then
-        log "Maximum containers ($MAX_CONTAINERS) reached, cannot scale up"
-        return
-    fi
-    
     local current_time=$(date +%s)
     if [ $((current_time - LAST_SCALE_TIME)) -lt $SCALE_COOLDOWN ]; then
-        log "Scale cooldown active ($(($SCALE_COOLDOWN - (current_time - LAST_SCALE_TIME)))s remaining), skipping scale up"
+        log "Scale cooldown active, skipping scale up"
         return
     fi
     
     CONTAINER_COUNT=$((CONTAINER_COUNT + 1))
     local new_container="web-app-$CONTAINER_COUNT"
     
-    log "🚀 Scaling UP: Creating $new_container (Total: $CONTAINER_COUNT containers)"
+    log "Scaling up: Creating $new_container"
     
     # Create new container
     docker run -d \
         --name "$new_container" \
         --network scaling_network \
         -e CONTAINER_ID="$new_container" \
-        --health-cmd="curl -f http://localhost:5000/health || exit 1" \
-        --health-interval=30s \
-        --health-timeout=10s \
-        --health-retries=3 \
         scaling_web-app:latest
     
     if [ $? -ne 0 ]; then
-        log "✗ Failed to start $new_container"
+        log "Failed to start $new_container"
         CONTAINER_COUNT=$((CONTAINER_COUNT - 1))
         return
     fi
     
     # Wait for container to be ready
-    if ! wait_for_container_ready "$new_container"; then
-        log "✗ $new_container failed health check, removing..."
-        docker stop "$new_container" && docker rm "$new_container"
-        CONTAINER_COUNT=$((CONTAINER_COUNT - 1))
-        return
-    fi
+    sleep 5
     
     # Register to Consul
     register_service "$new_container" 5000
     
     LAST_SCALE_TIME=$current_time
-    log "✅ Successfully scaled UP to $CONTAINER_COUNT containers"
+    log "Successfully scaled up to $CONTAINER_COUNT containers"
 }
 
 scale_down() {
-    if [ $CONTAINER_COUNT -le $MIN_CONTAINERS ]; then
-        log "Minimum containers ($MIN_CONTAINERS) reached, cannot scale down"
+    if [ $CONTAINER_COUNT -le 1 ]; then
+        log "Cannot scale down below 1 container"
         return
     fi
     
     local container_to_remove="web-app-$CONTAINER_COUNT"
     
-    log "🔽 Scaling DOWN: Removing $container_to_remove (Total will be: $((CONTAINER_COUNT - 1)) containers)"
+    log "Scaling down: Removing $container_to_remove"
     
     # Deregister from Consul
     deregister_service "$container_to_remove"
     
-    # Wait for consul to propagate changes
-    log "Waiting for Consul to propagate changes..."
-    sleep 15
+    # Wait for consul to propagate
+    sleep 10
     
-    # Gracefully stop container
-    log "Stopping $container_to_remove..."
-    docker stop "$container_to_remove" --time=10
-    docker rm "$container_to_remove"
+    # Stop and remove container
+    docker stop "$container_to_remove" >/dev/null 2>&1
+    docker rm "$container_to_remove" >/dev/null 2>&1
     
     CONTAINER_COUNT=$((CONTAINER_COUNT - 1))
-    log "✅ Successfully scaled DOWN to $CONTAINER_COUNT containers"
+    log "Successfully scaled down to $CONTAINER_COUNT containers"
 }
 
 check_and_scale() {
     local total_cpu=0
     local total_memory=0
     local active_containers=0
-    local high_load_containers=0
-    
-    log "🔍 Checking container metrics..."
     
     # Check all web-app containers
     for container in $(docker ps --filter "name=web-app-" --format "{{.Names}}"); do
@@ -532,110 +459,78 @@ check_and_scale() {
             local cpu=$(echo "$stats" | awk '{print $1}' | sed 's/%//')
             local memory=$(echo "$stats" | awk '{print $2}' | sed 's/%//')
             
-            # Handle case where stats might be empty or invalid
-            if [[ "$cpu" =~ ^[0-9]+\.?[0-9]*$ ]] && [[ "$memory" =~ ^[0-9]+\.?[0-9]*$ ]]; then
-                total_cpu=$(echo "scale=2; $total_cpu + $cpu" | bc -l)
-                total_memory=$(echo "scale=2; $total_memory + $memory" | bc -l)
-                active_containers=$((active_containers + 1))
-                
-                # Count high load containers
-                if (( $(echo "$cpu > $CPU_THRESHOLD" | bc -l) )) || (( $(echo "$memory > $MEMORY_THRESHOLD" | bc -l) )); then
-                    high_load_containers=$((high_load_containers + 1))
-                fi
-                
-                log "  📊 $container - CPU: ${cpu}%, Memory: ${memory}%"
-            else
-                log "  ⚠️  $container - Invalid stats received"
-            fi
-        else
-            log "  ❌ $container - No stats available"
+            total_cpu=$(echo "scale=2; $total_cpu + $cpu" | bc)
+            total_memory=$(echo "scale=2; $total_memory + $memory" | bc)
+            active_containers=$((active_containers + 1))
+            
+            log "Container $container - CPU: ${cpu}%, Memory: ${memory}%"
         fi
     done
     
     if [ $active_containers -eq 0 ]; then
-        log "❌ No active containers found - this shouldn't happen!"
+        log "No active containers found"
         return
     fi
     
-    # Calculate averages
-    local avg_cpu=$(echo "scale=2; $total_cpu / $active_containers" | bc -l)
-    local avg_memory=$(echo "scale=2; $total_memory / $active_containers" | bc -l)
+    # Calculate average
+    local avg_cpu=$(echo "scale=2; $total_cpu / $active_containers" | bc)
+    local avg_memory=$(echo "scale=2; $total_memory / $active_containers" | bc)
     
-    log "📈 Cluster Summary:"
-    log "  • Active Containers: $active_containers"
-    log "  • Average CPU: ${avg_cpu}%"
-    log "  • Average Memory: ${avg_memory}%"
-    log "  • High Load Containers: $high_load_containers"
+    log "Average - CPU: ${avg_cpu}%, Memory: ${avg_memory}%"
     
-    # Enhanced scaling decision logic
+    # Scale decision
     if (( $(echo "$avg_cpu > $CPU_THRESHOLD" | bc -l) )) || (( $(echo "$avg_memory > $MEMORY_THRESHOLD" | bc -l) )); then
-        log "🔥 HIGH LOAD DETECTED - Triggering scale UP"
+        log "High resource usage detected - triggering scale up"
         scale_up
-    elif [ $high_load_containers -gt $((active_containers / 2)) ] && [ $active_containers -lt $MAX_CONTAINERS ]; then
-        log "📊 Multiple containers under high load - Triggering scale UP"
-        scale_up
-    elif (( $(echo "$avg_cpu < 25" | bc -l) )) && (( $(echo "$avg_memory < 25" | bc -l) )) && [ $active_containers -gt $MIN_CONTAINERS ]; then
-        local current_time=$(date +%s)
-        if [ $((current_time - LAST_SCALE_TIME)) -gt $((SCALE_COOLDOWN * 2)) ]; then
-            log "📉 LOW LOAD DETECTED - Triggering scale DOWN"
-            scale_down
-        else
-            log "⏳ Low load detected but still in cooldown period"
-        fi
+    elif (( $(echo "$avg_cpu < 30" | bc -l) )) && (( $(echo "$avg_memory < 30" | bc -l) )) && [ $active_containers -gt 1 ]; then
+        log "Low resource usage detected - triggering scale down"
+        scale_down
     fi
 }
 
-# Wait for services to be ready
-wait_for_services() {
-    log "⏳ Waiting for Consul to be ready..."
-    local max_attempts=30
-    local attempt=0
-    
-    while [ $attempt -lt $max_attempts ]; do
-        if curl -s "$CONSUL_URL/v1/status/leader" >/dev/null 2>&1; then
-            log "✅ Consul is ready"
-            break
-        fi
-        attempt=$((attempt + 1))
-        sleep 2
+# Wait for consul to be ready
+wait_for_consul() {
+    log "Waiting for Consul to be ready..."
+    while ! curl -s "$CONSUL_URL/v1/status/leader" >/dev/null 2>&1; do
+        sleep 5
     done
-    
-    if [ $attempt -eq $max_attempts ]; then
-        log "❌ Consul failed to become ready"
-        exit 1
-    fi
+    log "Consul is ready"
 }
 
-# Initialize
-log "🚀 Starting Horizontal Scaling Monitor with SSL Support"
-log "Configuration:"
-log "  • CPU Threshold: ${CPU_THRESHOLD}%"
-log "  • Memory Threshold: ${MEMORY_THRESHOLD}%"
-log "  • Check Interval: ${CHECK_INTERVAL}s"
-log "  • Scale Cooldown: ${SCALE_COOLDOWN}s"
-log "  • Min Containers: $MIN_CONTAINERS"
-log "  • Max Containers: $MAX_CONTAINERS"
+# Main function
+main() {
+    log "Starting monitoring and scaling service"
+    
+    # Wait for consul
+    wait_for_consul
+    
+    # Initialize: Register initial container
+    sleep 10  # Wait for container to be fully ready
+    register_service "web-app-1" 5000
+    
+    # Main monitoring loop
+    while true; do
+        check_and_scale
+        sleep $CHECK_INTERVAL
+    done
+}
 
-wait_for_services
+# Handle script termination
+cleanup() {
+    log "Shutting down monitoring service"
+    exit 0
+}
 
-# Register initial container
-log "🔗 Registering initial container..."
-register_service "web-app-1" 5000
+trap cleanup SIGTERM SIGINT
 
-# Main monitoring loop
-log "🔄 Starting monitoring loop..."
-while true; do
-    check_and_scale
-    log "💤 Sleeping for ${CHECK_INTERVAL} seconds..."
-    echo "---"
-    sleep $CHECK_INTERVAL
-done
+# Run main function
+main
 EOF
 
-# 10. Create systemd service for monitoring
+# 11. Create systemd service for monitoring
 cat > /etc/systemd/system/scaling-monitor.service << 'EOF'
 [Unit]
-Description=Container Scaling Monitor with SSL Support
+Description=Container Scaling Monitor
 After=docker.service
 Requires=docker.service
 
@@ -646,62 +541,38 @@ WorkingDirectory=/opt/scaling
 ExecStart=/opt/scaling/scripts/monitor-and-scale.sh
 Restart=always
 RestartSec=10
-StandardOutput=journal
-StandardError=journal
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# 11. Create SSL certificate renewal script
+# 12. Create SSL certificate renewal script
 cat > /opt/scaling/scripts/renew-ssl.sh << 'EOF'
 #!/bin/bash
-# SSL Certificate Renewal Script for Containerized Nginx
+# SSL Certificate Renewal Script
 
-DOMAIN="juriengine.user.cloudjkt02.com"
-CERT_PATH="/opt/scaling/ssl/$DOMAIN"
-LOG_FILE="/opt/scaling/logs/ssl-renewal.log"
+echo "Renewing SSL certificates..."
 
-log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
-}
+# Renew certificates using certbot
+certbot renew --quiet
 
-log "Starting SSL certificate renewal check..."
-
-# Check if certificates need renewal (less than 30 days)
-if openssl x509 -checkend 2592000 -noout -in "$CERT_PATH/cert.pem" >/dev/null 2>&1; then
-    log "Certificate is still valid for more than 30 days"
-    exit 0
-fi
-
-log "Certificate needs renewal, stopping containerized nginx..."
-
-# Stop containerized nginx temporarily
-docker stop nginx-lb
-
-# Renew certificate using host certbot
-certbot renew --standalone --preferred-challenges http
-
-# Copy renewed certificates
-if [ -d "/etc/letsencrypt/live/$DOMAIN" ]; then
-    cp -r "/etc/letsencrypt/live/$DOMAIN/"* "$CERT_PATH/"
-    log "Certificates copied successfully"
+# Copy renewed certificates to scaling directory
+if [ $? -eq 0 ]; then
+    echo "Copying renewed certificates..."
+    cp -r /etc/letsencrypt/live /opt/scaling/ssl/
+    cp -r /etc/letsencrypt/archive /opt/scaling/ssl/
+    chmod -R 644 /opt/scaling/ssl/
+    find /opt/scaling/ssl/ -name "privkey*.pem" -exec chmod 600 {} \;
+    
+    # Reload nginx container
+    docker exec nginx-lb nginx -s reload
+    echo "SSL certificates renewed and nginx reloaded"
 else
-    log "ERROR: Renewed certificates not found!"
+    echo "Certificate renewal failed"
 fi
-
-# Restart containerized nginx
-docker start nginx-lb
-
-log "SSL certificate renewal completed"
-EOF
-
-chmod +x /opt/scaling/scripts/renew-ssl.sh
-
-# 12. Create SSL renewal cron job
-cat > /etc/cron.d/ssl-renewal << 'EOF'
-# SSL Certificate Renewal for Containerized Nginx
-0 3 * * 0 root /opt/scaling/scripts/renew-ssl.sh >/dev/null 2>&1
 EOF
 
 # 13. Make scripts executable
@@ -716,29 +587,32 @@ if ! command -v bc &> /dev/null; then
     fi
 fi
 
-echo "=== SSL-enabled Horizontal Scaling Setup Completed! ==="
+# 15. Create log directory
+mkdir -p /opt/scaling/logs
+
+# 16. Set up cron job for SSL renewal (optional)
+echo "0 3 * * 0 /opt/scaling/scripts/renew-ssl.sh >> /opt/scaling/logs/ssl-renewal.log 2>&1" | crontab -
+
+echo "=== Setup completed! ==="
 echo ""
-echo "🔥 Next steps:"
+echo "SSL-enabled Horizontal Scaling Setup:"
 echo "1. cd /opt/scaling && docker-compose up -d"
 echo "2. systemctl daemon-reload"
-echo "3. systemctl enable scaling-monitor.service" 
+echo "3. systemctl enable scaling-monitor.service"
 echo "4. systemctl start scaling-monitor.service"
 echo ""
-echo "🧪 Testing:"
-echo "• HTTP (redirects to HTTPS): curl -I http://your-domain/"
-echo "• HTTPS: curl -k https://your-domain/"
-echo "• Stress test: curl -k https://your-domain/stress"
-echo "• Health check: curl http://localhost/nginx-health"
+echo "Testing:"
+echo "5. HTTP (redirects to HTTPS): curl -I http://localhost/"
+echo "6. HTTPS: curl -k https://localhost/"
+echo "7. Stress test: curl -k https://localhost/stress"
+echo "8. Monitor logs: tail -f /opt/scaling/logs/scaling.log"
+echo "9. Consul UI: http://localhost:8500"
 echo ""
-echo "📊 Monitoring:"
-echo "• Scaling logs: tail -f /opt/scaling/logs/scaling.log"
-echo "• Consul UI: http://localhost:8500"
-echo "• Container stats: docker stats"
+echo "SSL Configuration:"
+echo "- Certificates: /opt/scaling/ssl/"
+echo "- HTTP automatically redirects to HTTPS"
+echo "- SSL renewal script: /opt/scaling/scripts/renew-ssl.sh"
+echo "- Cron job added for weekly SSL renewal"
 echo ""
-echo "🔒 SSL Notes:"
-echo "• Certificates copied to /opt/scaling/ssl/"
-echo "• Auto-renewal configured via cron (Sundays 3 AM)"
-echo "• Manual renewal: /opt/scaling/scripts/renew-ssl.sh"
-echo ""
-echo "⚠️  Your host nginx has been disabled and backed up."
-echo "   The containerized nginx now handles all traffic with SSL."
+echo "Your host nginx has been stopped and disabled."
+echo "The containerized nginx will handle both HTTP and HTTPS traffic."
