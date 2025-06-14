@@ -6,7 +6,7 @@ This guide explains how to set up Netdata monitoring with Nginx authentication u
 
 - Linux server with root access
 - Docker and Docker Compose installed
-- Nginx installed and running
+- Nginx (non-container) installed and running
 - Public IP address for your server
 
 ## Configuration Files
