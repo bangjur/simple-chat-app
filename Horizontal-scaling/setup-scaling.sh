@@ -317,6 +317,7 @@ volumes:
 networks:
   scaling_network:
     driver: bridge
+    # If this line not added, the network name will be 'scaling_scaling_network'
     name: scaling_network
 EOF
 
