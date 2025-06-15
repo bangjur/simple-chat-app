@@ -19,7 +19,7 @@ users = {}
 # Security Headers Middleware
 @app.after_request
 def add_security_headers(response):
-    # Content Security Policy - Allow specific sources only
+    # Comprehensive Content Security Policy - Including all directives without fallbacks
     csp_policy = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
@@ -29,7 +29,20 @@ def add_security_headers(response):
         "img-src 'self' data:; "
         "frame-ancestors 'none'; "
         "base-uri 'self'; "
-        "object-src 'none'"
+        "object-src 'none'; "
+        # Missing directives that need explicit definition:
+        "media-src 'none'; "           # Controls audio/video sources
+        "child-src 'none'; "           # Controls nested browsing contexts (frames, workers)
+        "worker-src 'none'; "          # Controls web workers, service workers
+        "manifest-src 'self'; "        # Controls web app manifests
+        "prefetch-src 'none'; "        # Controls resource prefetching
+        "navigate-to 'self'; "         # Controls navigation targets
+        "form-action 'self'; "         # Controls form submission targets
+        "frame-src 'none'; "           # Controls frame sources (backup for child-src)
+        "plugin-types ; "              # Restricts plugins (empty = no plugins)
+        "sandbox allow-forms allow-scripts allow-same-origin; "  # Enables sandboxing
+        "upgrade-insecure-requests; "  # Forces HTTPS upgrades
+        "block-all-mixed-content"      # Blocks mixed content
     )
     response.headers['Content-Security-Policy'] = csp_policy
     
@@ -40,7 +53,13 @@ def add_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-XSS-Protection'] = '1; mode=block'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-    response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
+    response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=(), payment=(), usb=(), magnetometer=(), gyroscope=(), speaker=(), vibrate=(), fullscreen=(), sync-xhr=()'
+    
+    # Additional security headers
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains; preload'
+    response.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
+    response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
+    response.headers['Cross-Origin-Resource-Policy'] = 'same-origin'
     
     return response
 
