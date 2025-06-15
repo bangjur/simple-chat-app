@@ -46,10 +46,11 @@ jobs:
     # Step 3: ZAP Baseline Scan
     - name: ZAP Baseline Scan
       run: |
+        mkdir -p zap-reports
+        chmod 777 zap-reports
         docker run --rm \
           --network=host \
-          -v ${{ github.workspace }}:/zap/wrk/:rw \
-          -u $(id -u):$(id -g) \
+          -v $PWD/zap-reports:/zap/wrk/:rw \
           zaproxy/zap-stable \
           zap-baseline.py -t http://localhost:5000 -J zap-report.json -r zap-report.html
         
@@ -60,8 +61,8 @@ jobs:
       with:
         name: zap-results
         path: |
-          zap-report.html
-          zap-report.json
+          zap-reports/zap-report.html
+          zap-reports/zap-report.json
 
   # # Job terpisah untuk Full Scan (optional, lebih thorough tapi lebih lama)
   # full-security-scan:
