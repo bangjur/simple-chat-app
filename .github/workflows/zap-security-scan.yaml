@@ -25,14 +25,16 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
       
-    - name: Start Flask application
+    - name: Start Flask SocketIO application
       run: |
-        export FLASK_ENV=development
-        export FLASK_RUN_HOST=0.0.0.0
-        export FLASK_RUN_PORT=5000
+        export FLASK_DEBUG=False
+        export FLASK_HOST=0.0.0.0
+        export FLASK_PORT=5000
+        export SECRET_KEY=test-secret-key-for-ci
+        export ALLOWED_ORIGINS=http://localhost:5000
         python app.py &
-        # Tunggu sampai Flask ready
-        sleep 20
+        # Tunggu sampai Flask SocketIO ready
+        sleep 30
         
     - name: Wait for Flask application to be ready
       run: |
