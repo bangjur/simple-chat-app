@@ -6,7 +6,10 @@
     <title>Wave Chat</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&family=Roboto:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&family=Roboto:wght@400;500&display=swap" 
+          rel="stylesheet" 
+          integrity="sha384-EVSTQN3/azprG1Anm3QDgpJLIm9Nao0Yz1ztcQTwFspd3yD65VohhpuuCOmLASjC" 
+          crossorigin="anonymous">
     <style>
         :root {
             --carolina-blue: #4B9CD3;
@@ -299,7 +302,7 @@
         <div id="login-container">
             <h2>Wave Chat</h2>
             <div class="login-form">
-                <input type="text" id="username-input" placeholder="Choose a username..." required>
+                <input type="text" id="username-input" placeholder="Choose a username..." required maxlength="50">
                 <button id="login-button">Join Chat</button>
             </div>
             <p id="login-error"></p>
@@ -316,14 +319,16 @@
             </div>
             <div id="messages"></div>
             <form id="message-form">
-                <input type="text" id="message-input" placeholder="Type your message..." required>
+                <input type="text" id="message-input" placeholder="Type your message..." required maxlength="500">
                 <button type="submit">Send</button>
             </form>
         </div>
     </div>
 
-    <!-- Include Socket.IO client library -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.1/socket.io.js"></script>
+    <!-- Include Socket.IO client library with SRI -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.1/socket.io.js" 
+            integrity="sha512-9mpsATI0KClwt+xVZfbcf2lJ8IFBAwsubJ6mI3rtULwyM3fBmQFzj0It4tGqxLOGQwGfJdk/G+fANnxfq9/cew==" 
+            crossorigin="anonymous"></script>
     
     <script>
         // Connect to Socket.IO server
@@ -341,6 +346,34 @@
         const messagesContainer = document.getElementById('messages');
         const messageForm = document.getElementById('message-form');
         const messageInput = document.getElementById('message-input');
+
+        // Enhanced input validation and sanitization
+        function sanitizeInput(input) {
+            return input.replace(/[<>'"&]/g, function(match) {
+                const entities = {
+                    '<': '&lt;',
+                    '>': '&gt;',
+                    '"': '&quot;',
+                    "'": '&#x27;',
+                    '&': '&amp;'
+                };
+                return entities[match];
+            });
+        }
+
+        function validateUsername(username) {
+            // Check length
+            if (username.length < 2 || username.length > 50) {
+                return 'Username must be between 2-50 characters';
+            }
+            
+            // Check for allowed characters only
+            if (!/^[a-zA-Z0-9\s\-_]+$/.test(username)) {
+                return 'Username can only contain letters, numbers, spaces, hyphens, and underscores';
+            }
+            
+            return null;
+        }
 
         // Event listeners
         loginButton.addEventListener('click', handleLogin);
@@ -362,8 +395,8 @@
 
         socket.on('registration_status', (data) => {
             if (data.success) {
-                username = usernameInput.value;
-                currentUsername.textContent = username;
+                username = usernameInput.value.trim();
+                currentUsername.textContent = sanitizeInput(username);
                 userAvatar.textContent = username.charAt(0).toUpperCase();
                 
                 loginContainer.style.display = 'none';
@@ -386,7 +419,7 @@
             if (username) {  // Only show if already logged in
                 const message = {
                     username: 'System',
-                    message: `${data.username} has joined the chat`,
+                    message: `${sanitizeInput(data.username)} has joined the chat`,
                     system: true
                 };
                 displayMessage(message);
@@ -397,18 +430,25 @@
             if (username) {  // Only show if already logged in
                 const message = {
                     username: 'System',
-                    message: `${data.username} has left the chat`,
+                    message: `${sanitizeInput(data.username)} has left the chat`,
                     system: true
                 };
                 displayMessage(message);
             }
         });
 
+        socket.on('error', (data) => {
+            alert('Error: ' + data.message);
+        });
+
         // Functions
         function handleLogin() {
             const usernameValue = usernameInput.value.trim();
-            if (usernameValue.length < 3) {
-                loginError.textContent = 'Username must be at least 3 characters long';
+            
+            // Client-side validation
+            const validationError = validateUsername(usernameValue);
+            if (validationError) {
+                loginError.textContent = validationError;
                 return;
             }
             
@@ -420,6 +460,12 @@
         function sendMessage() {
             const messageValue = messageInput.value.trim();
             if (!messageValue) return;
+
+            // Client-side message length validation
+            if (messageValue.length > 500) {
+                alert('Message too long (max 500 characters)');
+                return;
+            }
 
             const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             
@@ -438,7 +484,7 @@
             
             if (data.system) {
                 messageDiv.className = 'message system-message';
-                messageDiv.textContent = data.message;
+                messageDiv.textContent = data.message; // Already sanitized
             } else {
                 // Determine if this is the current user's message
                 const isOwnMessage = data.username === username;
@@ -447,13 +493,13 @@
                 if (!isOwnMessage) {
                     const usernameSpan = document.createElement('span');
                     usernameSpan.className = 'username';
-                    usernameSpan.textContent = data.username;
+                    usernameSpan.textContent = sanitizeInput(data.username);
                     messageDiv.appendChild(usernameSpan);
                 }
                 
                 const messageContent = document.createElement('span');
                 messageContent.className = 'message-text';
-                messageContent.textContent = data.message;
+                messageContent.textContent = data.message; // Already sanitized by server
                 messageDiv.appendChild(messageContent);
                 
                 const timestampSpan = document.createElement('span');

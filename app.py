@@ -16,6 +16,34 @@ socketio = SocketIO(app, cors_allowed_origins=allowed_origins)
 # Store active users
 users = {}
 
+# Security Headers Middleware
+@app.after_request
+def add_security_headers(response):
+    # Content Security Policy - Allow specific sources only
+    csp_policy = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "connect-src 'self' ws://localhost:* wss://localhost:* ws://" + request.host + " wss://" + request.host + "; "
+        "img-src 'self' data:; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "object-src 'none'"
+    )
+    response.headers['Content-Security-Policy'] = csp_policy
+    
+    # Anti-clickjacking protection
+    response.headers['X-Frame-Options'] = 'DENY'
+    
+    # Additional security headers
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
+    
+    return response
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -50,9 +78,14 @@ def handle_register(data):
         username = data.get('username', '').strip()
         user_id = request.sid
         
-        # Validate username
+        # Enhanced username validation
         if not username or len(username) < 2:
             emit('registration_status', {'success': False, 'message': 'Username must be at least 2 characters'})
+            return
+            
+        # Check for potentially malicious characters
+        if not username.replace(' ', '').replace('-', '').replace('_', '').isalnum():
+            emit('registration_status', {'success': False, 'message': 'Username contains invalid characters'})
             return
         
         # Check if username is already taken
@@ -79,15 +112,24 @@ def handle_message(data):
         message = data.get('message', '').strip()
         timestamp = data.get('timestamp', '')
         
-        # Validate message
+        # Enhanced message validation
         if not message:
             emit('error', {'message': 'Empty message not allowed'})
+            return
+            
+        # Limit message length
+        if len(message) > 500:
+            emit('error', {'message': 'Message too long (max 500 characters)'})
             return
             
         # Verify user exists and session matches
         if username not in users or users[username] != request.sid:
             emit('error', {'message': 'Authentication error'})
             return
+        
+        # Basic XSS prevention - escape HTML characters
+        import html
+        message = html.escape(message)
         
         # Broadcast message to all clients
         emit('receive_message', {
