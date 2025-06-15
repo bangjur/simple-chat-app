@@ -18,15 +18,18 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.11'
+        python-version: '3.9'
         
     - name: Install dependencies
       run: |
+        python -m venv venv
+        source venv/bin/activate
         python -m pip install --upgrade pip
         pip install -r requirements.txt
       
     - name: Start Flask SocketIO application
       run: |
+        source venv/bin/activate
         export FLASK_DEBUG=False
         export FLASK_HOST=0.0.0.0
         export FLASK_PORT=5000
