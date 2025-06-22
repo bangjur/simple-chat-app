@@ -1,7 +1,7 @@
 flask==2.3.3
 flask-socketio==5.3.4
 python-dotenv==1.0.0
-eventlet==0.30.2
+eventlet==0.33.3
 selenium==4.11.2
 webdriver-manager==3.8.6
 gunicorn==21.2.0

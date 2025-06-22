@@ -10,6 +10,30 @@ This is a simple real-time chat application built with Python Flask and WebSocke
 - Notifications when users join or leave
 - Different styling for your own messages vs others' messages
 
+## Security Improvements
+
+The application implements several security best practices:
+
+- **Environment-based Secret Key**: The Flask `SECRET_KEY` is loaded from environment variables, not hardcoded.
+- **CORS Restriction**: (Optional) You can restrict allowed origins for Socket.IO using the `ALLOWED_ORIGINS` environment variable.
+- **Security Headers**: HTTP security headers are set for every response, including:
+  - `Content-Security-Policy`
+  - `X-Frame-Options`
+  - `X-Content-Type-Options`
+  - `Referrer-Policy`
+- **Username Validation**: Usernames are validated for length, allowed characters, and reserved words.
+- **Message Validation & Sanitization**: Messages are validated for length and sanitized (HTML-escaped) to prevent XSS.
+- **Rate Limiting**: Each user is limited to a configurable number of messages per time window to prevent spam/DoS.
+- **Session Timeout**: Inactive users are automatically removed after a configurable timeout.
+- **User Limit**: The number of concurrent users is limited to prevent resource exhaustion.
+- **Error Handling**: Custom error handlers for 404 and 500 responses.
+- **Health Check Endpoint**: `/health` endpoint for AWS App Runner monitoring.
+
+**Note:**
+- There is currently **no session management or database**. All user and message data is stored in memory only.
+- **When the app restarts, all users must reconnect and all chat history is lost.**
+- **No chat history is available** after a restart or refresh.
+
 ## Requirements
 
 - Python 3.7+
@@ -29,15 +53,23 @@ pip install -r requirements.txt
 
 ## Running the Application
 
-1. Start the server:
+You can run the application in development or production mode:
 
+**Development:**
 ```bash
-python app.py
+python3 app.py
 ```
 
-2. Open your browser and go to `http://localhost:5000`
+**Production (recommended):**
+```bash
+gunicorn -k eventlet -w 1 --threads 100 -b 0.0.0.0:5000 app:app
+```
 
-3. Open multiple tabs with the same URL to test the real-time chat functionality
+- `-k eventlet`: Use eventlet worker for WebSocket support
+- `-w 1`: Number of worker processes (increase as needed)
+- `--threads 100`: Number of threads per worker (tune as needed)
+- `-b 0.0.0.0:5000`: Bind to all interfaces on port 5000
+- `app:app`: Module and Flask app object
 
 ## How It Works
 

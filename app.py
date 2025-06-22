@@ -1,172 +1,351 @@
 import os
+import time
+import html
+import re
+from collections import defaultdict
 from flask import Flask, render_template, request
-from flask_socketio import SocketIO, emit, join_room, leave_room
+from flask_socketio import SocketIO, emit
 from dotenv import load_dotenv
+
+# Load environment variables
 load_dotenv()
 
-
 app = Flask(__name__)
-# Use environment variable for secret key
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-fallback-key-change-in-production')
 
-# Restrict CORS to specific origins in production
-allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:5000').split(',')
-socketio = SocketIO(app, cors_allowed_origins=allowed_origins)
+# Security configurations
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24))
 
-# Store active users
-users = {}
+# FRONTEND AND BACKEND ARE DEPLOYED ON DIFFERENT ORIGINS
+# CORS configuration - restrict to specific origins
+# ALLOWED_ORIGINS = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:3000').split(',')
+# ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS if origin.strip()]
+# socketio = SocketIO(app, cors_allowed_origins=ALLOWED_ORIGINS)
 
-# Security Headers Middleware
-@app.after_request
-def add_security_headers(response):
-    # Comprehensive Content Security Policy - Including all directives without fallbacks
-    csp_policy = (
-        "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "font-src 'self' https://fonts.gstatic.com; "
-        "connect-src 'self' ws://localhost:* wss://localhost:* ws://" + request.host + " wss://" + request.host + "; "
-        "img-src 'self' data:; "
-        "frame-ancestors 'none'; "
-        "base-uri 'self'; "
-        "object-src 'none'; "
-        # Missing directives that need explicit definition:
-        "media-src 'none'; "           # Controls audio/video sources
-        "child-src 'none'; "           # Controls nested browsing contexts (frames, workers)
-        "worker-src 'none'; "          # Controls web workers, service workers
-        "manifest-src 'self'; "        # Controls web app manifests
-        "prefetch-src 'none'; "        # Controls resource prefetching
-        "navigate-to 'self'; "         # Controls navigation targets
-        "form-action 'self'; "         # Controls form submission targets
-        "frame-src 'none'; "           # Controls frame sources (backup for child-src)
-        "plugin-types ; "              # Restricts plugins (empty = no plugins)
-        "sandbox allow-forms allow-scripts allow-same-origin; "  # Enables sandboxing
-        "upgrade-insecure-requests; "  # Forces HTTPS upgrades
-        "block-all-mixed-content"      # Blocks mixed content
-    )
-    response.headers['Content-Security-Policy'] = csp_policy
+# FRONTEND AND BACKEND ARE DEPLOYED ON THE SAME ORIGIN
+socketio = SocketIO(app)  # Same origin, gak perlu CORS
+
+# Configuration constants
+MAX_MESSAGE_LENGTH = int(os.environ.get('MAX_MESSAGE_LENGTH', 1000))
+RATE_LIMIT_MESSAGES = int(os.environ.get('RATE_LIMIT_MESSAGES', 100))
+RATE_LIMIT_WINDOW = int(os.environ.get('RATE_LIMIT_WINDOW', 60))
+SESSION_TIMEOUT = int(os.environ.get('SESSION_TIMEOUT', 3600))
+MAX_USERS = int(os.environ.get('MAX_USERS', 100))
+
+# Store active users and sessions
+users = {}  # username -> sid
+user_sessions = {}  # username -> {sid, last_activity, join_time}
+user_message_times = defaultdict(list)  # username -> [timestamps]
+
+def cleanup_inactive_sessions():
+    """Remove inactive user sessions"""
+    now = time.time()
+    inactive_users = []
     
-    # Anti-clickjacking protection
-    response.headers['X-Frame-Options'] = 'DENY'
+    for username, session in user_sessions.items():
+        if now - session['last_activity'] > SESSION_TIMEOUT:
+            inactive_users.append(username)
     
-    # Additional security headers
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['X-XSS-Protection'] = '1; mode=block'
-    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-    response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=(), payment=(), usb=(), magnetometer=(), gyroscope=(), speaker=(), vibrate=(), fullscreen=(), sync-xhr=()'
+    for username in inactive_users:
+        if username in user_sessions:
+            del user_sessions[username]
+        if username in users:
+            del users[username]
+        if username in user_message_times:
+            del user_message_times[username]
+        
+        # Notify all clients that user left due to timeout
+        emit('user_left', {
+            'username': username, 
+            'reason': 'timeout'
+        }, broadcast=True)
+        
+        print(f'User {username} removed due to inactivity')
+
+def validate_username(username):
+    """Validate username format and availability"""
+    if not username or not isinstance(username, str):
+        return False, "Username is required"
     
-    # Additional security headers
-    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains; preload'
-    response.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
-    response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
-    response.headers['Cross-Origin-Resource-Policy'] = 'same-origin'
+    username = username.strip()
     
-    return response
+    if len(username) < 3 or len(username) > 20:
+        return False, "Username must be 3-20 characters long"
+    
+    if not re.match(r'^[a-zA-Z0-9_-]+$', username):
+        return False, "Username can only contain letters, numbers, underscore, and dash"
+    
+    if username.lower() in ['admin', 'moderator', 'system', 'bot']:
+        return False, "Username is reserved"
+    
+    return True, "Valid username"
+
+def check_rate_limit(username):
+    """Check if user is rate limited"""
+    now = time.time()
+    
+    # Clean old timestamps
+    user_message_times[username] = [
+        timestamp for timestamp in user_message_times[username]
+        if now - timestamp < RATE_LIMIT_WINDOW
+    ]
+    
+    # Check rate limit
+    if len(user_message_times[username]) >= RATE_LIMIT_MESSAGES:
+        return False
+    
+    return True
+
+def sanitize_message(message):
+    """Sanitize user message"""
+    if not message or not isinstance(message, str):
+        return ""
+    
+    # Escape HTML
+    message = html.escape(message.strip())
+    
+    # Remove excessive whitespace
+    message = re.sub(r'\s+', ' ', message)
+    
+    return message
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
+@app.route('/health')
+def health_check():
+    """Health check endpoint for AWS App Runner"""
+    return {'status': 'healthy', 'users_online': len(users)}, 200
+
 @socketio.on('connect')
 def handle_connect():
-    print('Client connected')
+    print(f'Client connected: {request.sid}')
+    cleanup_inactive_sessions()
 
 @socketio.on('disconnect')
 def handle_disconnect():
+    """Handle client disconnection"""
     user_id = request.sid
     username = None
     
-    try:
-        # Find user by session ID
-        username = next((name for name, sid in users.items() if sid == user_id), None)
-        
-        if username:
+    # Find username by session ID
+    for name, sid in users.items():
+        if sid == user_id:
+            username = name
+            break
+    
+    if username:
+        # Remove user from all tracking
+        if username in users:
             del users[username]
-            # Notify all clients that a user has left
-            emit('user_left', {'username': username}, broadcast=True)
-            print(f'User {username} disconnected')
-        else:
-            print('Unknown client disconnected')
-            
-    except Exception as e:
-        print(f'Error handling disconnect: {e}')
+        if username in user_sessions:
+            del user_sessions[username]
+        if username in user_message_times:
+            del user_message_times[username]
+        
+        # Notify all clients
+        emit('user_left', {
+            'username': username,
+            'reason': 'disconnect'
+        }, broadcast=True)
+        
+        print(f'User {username} disconnected')
+    else:
+        print(f'Unknown client disconnected: {user_id}')
 
 @socketio.on('register_user')
 def handle_register(data):
+    """Handle user registration"""
     try:
         username = data.get('username', '').strip()
         user_id = request.sid
         
-        # Enhanced username validation
-        if not username or len(username) < 2:
-            emit('registration_status', {'success': False, 'message': 'Username must be at least 2 characters'})
+        # Validate username
+        is_valid, message = validate_username(username)
+        if not is_valid:
+            emit('registration_status', {
+                'success': False, 
+                'message': message
+            })
             return
-            
-        # Check for potentially malicious characters
-        if not username.replace(' ', '').replace('-', '').replace('_', '').isalnum():
-            emit('registration_status', {'success': False, 'message': 'Username contains invalid characters'})
+        
+        # Check if too many users
+        if len(users) >= MAX_USERS:
+            emit('registration_status', {
+                'success': False, 
+                'message': 'Server is full, please try again later'
+            })
             return
         
         # Check if username is already taken
         if username in users:
-            emit('registration_status', {'success': False, 'message': 'Username already taken'})
+            emit('registration_status', {
+                'success': False, 
+                'message': 'Username is already taken'
+            })
             return
         
-        # Store user
+        # Register user
         users[username] = user_id
-        emit('registration_status', {'success': True, 'message': 'Registration successful'})
+        user_sessions[username] = {
+            'sid': user_id,
+            'last_activity': time.time(),
+            'join_time': time.time()
+        }
         
-        # Notify all clients that a user has joined
-        emit('user_joined', {'username': username}, broadcast=True)
-        print(f'User {username} registered')
+        emit('registration_status', {
+            'success': True, 
+            'message': 'Registration successful'
+        })
+        
+        # Notify all clients
+        emit('user_joined', {
+            'username': username,
+            'users_online': len(users)
+        }, broadcast=True)
+        
+        print(f'User {username} registered successfully')
         
     except Exception as e:
-        print(f'Error registering user: {e}')
-        emit('registration_status', {'success': False, 'message': 'Registration failed'})
+        print(f'Registration error: {str(e)}')
+        emit('registration_status', {
+            'success': False, 
+            'message': 'Registration failed, please try again'
+        })
 
 @socketio.on('send_message')
 def handle_message(data):
+    """Handle incoming messages"""
     try:
-        username = data.get('username', '')
-        message = data.get('message', '').strip()
-        timestamp = data.get('timestamp', '')
+        username = data.get('username', '').strip()
+        message = data.get('message', '')
+        timestamp = data.get('timestamp')
         
-        # Enhanced message validation
-        if not message:
-            emit('error', {'message': 'Empty message not allowed'})
-            return
-            
-        # Limit message length
-        if len(message) > 500:
-            emit('error', {'message': 'Message too long (max 500 characters)'})
-            return
-            
-        # Verify user exists and session matches
+        # Verify user authentication
         if username not in users or users[username] != request.sid:
             emit('error', {'message': 'Authentication error'})
             return
         
-        # Basic XSS prevention - escape HTML characters
-        import html
-        message = html.escape(message)
+        # Update last activity
+        if username in user_sessions:
+            user_sessions[username]['last_activity'] = time.time()
+        
+        # Validate message
+        if not message or not isinstance(message, str):
+            emit('error', {'message': 'Message cannot be empty'})
+            return
+        
+        if len(message) > MAX_MESSAGE_LENGTH:
+            emit('error', {
+                'message': f'Message too long (max {MAX_MESSAGE_LENGTH} characters)'
+            })
+            return
+        
+        # Check rate limiting
+        if not check_rate_limit(username):
+            emit('error', {
+                'message': f'Too many messages. Limit: {RATE_LIMIT_MESSAGES} messages per {RATE_LIMIT_WINDOW} seconds'
+            })
+            return
+        
+        # Sanitize message
+        clean_message = sanitize_message(message)
+        if not clean_message:
+            emit('error', {'message': 'Invalid message content'})
+            return
+        
+        # Record message timestamp for rate limiting
+        user_message_times[username].append(time.time())
         
         # Broadcast message to all clients
         emit('receive_message', {
             'username': username,
-            'message': message,
-            'timestamp': timestamp
+            'message': clean_message,
+            'timestamp': timestamp or int(time.time() * 1000)
         }, broadcast=True)
         
-        print(f'Message from {username}: {message}')
+        print(f'Message from {username}: {clean_message[:50]}...')
         
     except Exception as e:
-        print(f'Error handling message: {e}')
+        print(f'Message handling error: {str(e)}')
         emit('error', {'message': 'Failed to send message'})
 
-if __name__ == '__main__':
-    # Get configuration from environment
-    debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
-    host = os.environ.get('FLASK_HOST', '0.0.0.0')
-    port = int(os.environ.get('FLASK_PORT', 5000))
+@socketio.on('get_users')
+def handle_get_users():
+    """Send list of online users"""
+    try:
+        username = None
+        
+        # Find requesting user
+        for name, sid in users.items():
+            if sid == request.sid:
+                username = name
+                break
+        
+        if not username:
+            emit('error', {'message': 'Authentication required'})
+            return
+        
+        # Update last activity
+        if username in user_sessions:
+            user_sessions[username]['last_activity'] = time.time()
+        
+        # Send users list
+        emit('users_list', {
+            'users': list(users.keys()),
+            'count': len(users)
+        })
+        
+    except Exception as e:
+        print(f'Get users error: {str(e)}')
+        emit('error', {'message': 'Failed to get users list'})
+
+@socketio.on('ping')
+def handle_ping():
+    """Handle ping for keepalive"""
+    username = None
     
-    socketio.run(app, debug=debug_mode, host=host, port=port, use_reloader=False)
+    # Find requesting user
+    for name, sid in users.items():
+        if sid == request.sid:
+            username = name
+            break
+    
+    if username and username in user_sessions:
+        user_sessions[username]['last_activity'] = time.time()
+    
+    emit('pong')
+
+# Error handlers
+@app.errorhandler(404)
+def not_found(error):
+    return {'error': 'Not found'}, 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return {'error': 'Internal server error'}, 500
+
+# Periodic cleanup (you might want to use a proper task scheduler in production)
+def periodic_cleanup():
+    """Run periodic cleanup of inactive sessions"""
+    cleanup_inactive_sessions()
+
+if __name__ == '__main__':
+    # Production settings
+    debug_mode = os.environ.get('DEBUG', 'False').lower() == 'true'
+    host = os.environ.get('HOST', '0.0.0.0')
+    port = int(os.environ.get('PORT', 5000))
+    
+    print(f"Starting server on {host}:{port}")
+    print(f"Debug mode: {debug_mode}")
+    # print(f"Allowed origins: {ALLOWED_ORIGINS}")
+    print(f"Max users: {MAX_USERS}")
+    print(f"Rate limit: {RATE_LIMIT_MESSAGES} messages per {RATE_LIMIT_WINDOW} seconds")
+    
+    socketio.run(
+        app, 
+        debug=debug_mode, 
+        host=host, 
+        port=port, 
+        use_reloader=False
+    )
