@@ -71,6 +71,9 @@ gunicorn -k eventlet -w 1 --threads 100 -b 0.0.0.0:5000 app:app
 - `-b 0.0.0.0:5000`: Bind to all interfaces on port 5000
 - `app:app`: Module and Flask app object
 
+> **Info:**
+> Konfigurasi production ini telah dicoba di AWS App Runner dan berhasil berjalan dengan baik.
+
 ## How It Works
 
 The application uses WebSockets through Socket.IO to establish persistent, bidirectional connections between the server and each client (browser tab). When a user sends a message, it's transmitted to the server through the WebSocket connection, and then the server broadcasts it to all connected clients.
